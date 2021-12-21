@@ -1,0 +1,163 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qcguy
+
+
+---
+#kind: ConfigMap
+#apiVersion: v1
+#metadata:
+#  name: qcguy-configmap
+#  namespace: qcguy
+#data:
+  # Configuration values can be set as key-value properties
+  #database: mongodb
+  #database_uri: mongodb://localhost:27017
+  # Or set as complete file contents (even JSON!)
+#  fromfile: /home/vik/IdeaProjects/qcguy-cms/config/
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qcguy
+  namespace: qcguy
+  labels:
+    app: qcguy
+    io.kompose.service: qcguy
+spec:
+  type: NodePort
+  selector:
+    io.kompose.service: qcguy
+    app: qcguy
+  ports:
+    - port: 2368
+      name: "2368"
+      nodePort: 30368
+      targetPort: 2368
+status:
+  loadBalancer: {}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: qcguy-pv-volume
+  namespace: qcguy
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 300Mi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/data"
+#apiVersion: v1
+#kind: PersistentVolume
+#metadata:
+#  name: qcguy-content
+#  labels:
+#    app: qcguy-content
+#spec:
+#  storageClassName: ""
+#  capacity:
+#    storage: 250Mi
+#  accessModes:
+#    - ReadWriteOnce
+#  persistentVolumeReclaimPolicy: Retain
+#  claimRef:
+#    namespace: qcguy
+#    name: qcguy-content
+#  nfs:
+#    path: /tmp
+#    server: 172.17.0.2
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  creationTimestamp: null
+  name: qcguy-content-claim
+  namespace: qcguy
+  labels:
+    app: qcguy-content-claim
+    io.kompose.service: qcguy-content-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 250Mi
+  storageClassName: manual
+status: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: kompose convert
+    kompose.version: 1.26.0 (40646f47)
+  creationTimestamp: null
+  labels:
+    app: qcguy
+    io.kompose.service: qcguy
+  name: qcguy
+  namespace: qcguy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qcguy
+      io.kompose.service: qcguy
+  strategy: {}
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: kompose convert
+        kompose.version: 1.26.0 (40646f47)
+      creationTimestamp: null
+      labels:
+        io.kompose.service: qcguy
+        app: qcguy
+    spec:
+      volumes:
+        - name: qcguy-content-storage
+          persistentVolumeClaim:
+            claimName: qcguy-content-claim
+        - name: qcguy-configmap
+          configMap:
+            name: qcguy-configmap
+            items:
+              - key: config.production.json
+                path: "./var/lib/ghost/"
+      containers:
+        - env:
+            - name: url
+              value: https://www.qcguy.com
+          image: ghost:latest
+          imagePullPolicy: Always
+          name: qcguy
+          ports:
+            - containerPort: 2368
+          resources: {}
+          volumeMounts:
+            #- mountPath: "/var/lib/ghost/config.production.json"
+            #  name: qcguy-configmap
+            - mountPath: "/var/lib/ghost/content"
+              name: qcguy-content-storage
+      restartPolicy: Always
+status: {}
+#---
+#apiVersion: v1
+#kind: PersistentVolumeClaim
+#metadata:
+#  name: qcguy-config
+#  namespace: qcguy
+#spec:
+#  accessModes:
+#    - ReadWriteOnce
+#  resources:
+#    requests:
+#      storage: 0.1Gi
+#  storageClassName: do-block-storage
