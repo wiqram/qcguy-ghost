@@ -28,16 +28,21 @@ metadata:
     io.kompose.service: qcguy
 spec:
   type: NodePort
+  #loadBalancerIP: 192.168.49.234
   selector:
     io.kompose.service: qcguy
     app: qcguy
   ports:
     - port: 2368
+      protocol: TCP
       name: "2368"
       nodePort: 30368
       targetPort: 2368
+  #externalTrafficPolicy: Local
 status:
-  loadBalancer: {}
+  #loadBalancer:
+  #  ingress:
+  #    - ip: 192.168.49.234
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -54,6 +59,7 @@ spec:
     - ReadWriteOnce
   hostPath:
     path: "/mnt/data"
+#  storageClassName: do-block-storage
 #apiVersion: v1
 #kind: PersistentVolume
 #metadata:
@@ -125,39 +131,27 @@ spec:
         - name: qcguy-content-storage
           persistentVolumeClaim:
             claimName: qcguy-content-claim
-        - name: qcguy-configmap
+        - name: qcguy-configmap-volume
           configMap:
             name: qcguy-configmap
-            items:
-              - key: config.production.json
-                path: "./var/lib/ghost/"
+            #items:
+            # - key: config.production.json
+            #    path: "./var/lib/ghost/config.production.json"
       containers:
         - env:
             - name: url
               value: https://www.qcguy.com
           image: ghost:latest
-          imagePullPolicy: Always
+          #imagePullPolicy: Always
           name: qcguy
           ports:
             - containerPort: 2368
           resources: {}
           volumeMounts:
-            #- mountPath: "/var/lib/ghost/config.production.json"
-            #  name: qcguy-configmap
-            - mountPath: "/var/lib/ghost/content"
+            - mountPath: /var/lib/ghost/content
               name: qcguy-content-storage
-      restartPolicy: Always
+            - name: qcguy-configmap-volume
+              mountPath: /var/lib/ghost/config.production.json
+              subPath: config.production.json
+      #restartPolicy: Never
 status: {}
-#---
-#apiVersion: v1
-#kind: PersistentVolumeClaim
-#metadata:
-#  name: qcguy-config
-#  namespace: qcguy
-#spec:
-#  accessModes:
-#    - ReadWriteOnce
-#  resources:
-#    requests:
-#      storage: 0.1Gi
-#  storageClassName: do-block-storage

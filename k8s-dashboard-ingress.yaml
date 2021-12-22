@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: k8s-dashboard-ingress
+  namespace: kubernetes-dashboard
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.org/ssl-services: "kubernetes-dashboard"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    #kubernetes.io/ingress.class: "kong"
+    #kubernetes.io/ingress.class: nginx
+    #  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    #nginx.ingress.kubernetes.io/default-backend: ingress-nginx-controller
+    #kubernetes.io/ingress.class: nginx
+    ## tells ingress to check for regex in the config file
+    #nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  #tls:
+  #- hosts:
+  #  - traderyolo.com
+  #  - swagger.traderyolo.com
+  #  secretName: yolo-secret-tls
+  rules:
+    - host: dashboard.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kubernetes-dashboard
+                port:
+                  number: 80

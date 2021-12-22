@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: qcguy-ingress
+  namespace: qcguy
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    #nginx.org/ssl-services: "qcguy"
+    #nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    #kubernetes.io/ingress.class: "kong"
+    #kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    #nginx.ingress.kubernetes.io/default-backend: ingress-nginx-controller
+    #kubernetes.io/ingress.class: nginx
+    ## tells ingress to check for regex in the config file
+    #nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  tls:
+  - hosts:
+    - qcguy.com
+    secretName: qqcguy-letsencrypt-production
+  rules:
+    - host: qcguy.com
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: qcguy
+                port:
+                  number: 2368

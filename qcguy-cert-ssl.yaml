@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: qqcguy-letsencrypt-production
+  namespace: qcguy
+spec:
+  secretName: qqcguy-letsencrypt-production
+  dnsNames:
+    - qcguy.com
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
