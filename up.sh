@@ -10,7 +10,7 @@ if kubectl version; then
 #    minikube delete
   else
     echo "Command failed"
-    minikube start --cpus 4 --memory 16384
+    minikube start --cpus 4 --memory 16384 #--driver=none
     #minikube start
     #set strictARP to true to allow for MetalLB loadbalancer
     #kubectl get configmap kube-proxy -n kube-system -o yaml | sed -e "s/strictARP: false/strictARP: false/" | kubectl apply -f - -n kube-system
@@ -27,7 +27,7 @@ eval $(minikube -p minikube docker-env)
 #create k8s namespace for yolo
 kubectl create namespace qcguy --dry-run=client -o yaml | kubectl apply -f -
 #create configmap for qcguy
-kubectl create configmap qcguy-configmap --from-file=./config -n qcguy
+kubectl create configmap qcguy-configmap --from-file=/home/vik/IdeaProjects/qcguy-ghost/config -n qcguy
 #create k8s namespace for qcguy
 kubectl apply -f compiled.yaml
 
