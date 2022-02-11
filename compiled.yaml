@@ -56,7 +56,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   hostPath:
-    path: "/mnt/data"
+    path: /ghost-data
 #  storageClassName: do-block-storage
 #apiVersion: v1
 #kind: PersistentVolume
