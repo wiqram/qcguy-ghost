@@ -10,8 +10,8 @@ if kubectl version; then
 #    minikube delete
   else
     echo "Command failed"
-    #minikube start --cpus 4 --memory 16384 #--driver=none
-    minikube start --cpus 4 --memory 16384 --mount-string="/home/cloud/Ideaprojects/qcguy-ghost/data:/ghost-data" --mount
+    #minikube start --cpus 4 --memory 16384 #--driver=none--driver=docker --alsologtostderr -v=4
+    minikube start --cpus 4 --memory 16384 --network bridge --mount-string="/home/cloud/Ideaprojects/minikube-mnt/:/mnt" --mount
     #minikube start
     #set strictARP to true to allow for MetalLB loadbalancer
     #kubectl get configmap kube-proxy -n kube-system -o yaml | sed -e "s/strictARP: false/strictARP: false/" | kubectl apply -f - -n kube-system
