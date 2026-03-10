@@ -37,7 +37,7 @@ spec:
       nodePort: 30368
       targetPort: 2368
   #externalTrafficPolicy: Local
-status:
+#status:
   #loadBalancer:
   #  ingress:
   #    - ip: 192.168.49.234
