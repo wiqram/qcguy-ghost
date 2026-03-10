@@ -26,4 +26,9 @@ docker cp images/size/w960/2021/12/. minikube:/mnt/data/images/size/w960/2021/12
 
 docker cp images/size/w1140/2021/12/. minikube:/mnt/data/images/size/w1140/2021/12
 
-docker cp images/size/w1920/2021/12/. minikube:/mnt/data/images/size/w1920/2021/12 
+docker cp images/size/w1920/2021/12/. minikube:/mnt/data/images/size/w1920/2021/12
+
+
+"security": {
+"staffDeviceVerification": false
+},
