@@ -144,7 +144,14 @@ spec:
           name: qcguy
           ports:
             - containerPort: 2368
-          resources: {}
+          # Ghost CMS, ~100 visitors/day. Observed ~595Mi steady, ~1.25 CPU on spikes.
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
           volumeMounts:
             - mountPath: /var/lib/ghost/content #/mnt/qcguy-ghost/data
               name: qcguy-content-storage
