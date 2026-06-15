@@ -4,6 +4,12 @@ kind: Namespace
 metadata:
   name: qcguy
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-secrets
+  namespace: qcguy
+---
 #kind: ConfigMap
 #apiVersion: v1
 #metadata:
@@ -120,21 +126,25 @@ spec:
       annotations:
         kompose.cmd: kompose convert
         kompose.version: 1.26.0 (40646f47)
+        # --- Vault Agent Injector: render config.production.json from kv/qcguy/ghost ---
+        # Secret is owned in this repo (vault/ghost.secret.sops.env) and refreshed at
+        # deploy by the vaultSync(app:'qcguy') stage in the Jenkinsfile.
+        vault.hashicorp.com/agent-inject: 'true'
+        vault.hashicorp.com/role: 'qcguy-role'
+        vault.hashicorp.com/agent-pre-populate-only: 'true'
+        vault.hashicorp.com/agent-inject-secret-config.production.json: 'kv/qcguy/ghost'
+        vault.hashicorp.com/agent-inject-template-config.production.json: |
+          {{- with secret "kv/qcguy/ghost" -}}{{ .Data.data.CONFIG_PRODUCTION_JSON_B64 | base64Decode }}{{- end -}}
       creationTimestamp: null
       labels:
         io.kompose.service: qcguy
         app: qcguy
     spec:
+      serviceAccountName: vault-secrets
       volumes:
         - name: qcguy-content-storage
           persistentVolumeClaim:
             claimName: qcguy-content-claim
-        - name: qcguy-configmap-volume
-          configMap:
-            name: qcguy-configmap
-            #items:
-            # - key: config.production.json
-            #    path: "./var/lib/ghost/config.production.json"
       containers:
         - env:
             - name: url
@@ -142,6 +152,11 @@ spec:
           image: ghost:latest
           #imagePullPolicy: Always
           name: qcguy
+          # Copy the Vault-rendered config to where Ghost expects it, then start Ghost
+          # (replicates the image's default ENTRYPOINT+CMD: docker-entrypoint.sh node current/index.js).
+          command: ["/bin/sh","-c"]
+          args:
+            - cp /vault/secrets/config.production.json /var/lib/ghost/config.production.json && exec docker-entrypoint.sh node current/index.js
           ports:
             - containerPort: 2368
           # Ghost CMS, ~100 visitors/day. Observed ~595Mi steady, ~1.25 CPU on spikes.
@@ -155,8 +170,5 @@ spec:
           volumeMounts:
             - mountPath: /var/lib/ghost/content #/mnt/qcguy-ghost/data
               name: qcguy-content-storage
-            - name: qcguy-configmap-volume
-              mountPath: /var/lib/ghost/config.production.json #/mnt/qcguy-ghost/data/data/config.production.json
-              subPath: config.production.json
       #restartPolicy: Never
 status: {}
