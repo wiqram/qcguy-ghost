@@ -9,3 +9,16 @@ gen
 config
 data/*.db
 config/qcguy-secret-tls.yaml
+
+# legacy/backup dir (DBs, images, dumps) — not source
+/old/
+
+# Ghost runtime data (not source) — tracked data/assets & data/images are kept
+data/data/
+data/logs/
+data/public/
+data/settings/
+data/themes/
+
+# member exports (contain PII — never commit)
+members*.csv
