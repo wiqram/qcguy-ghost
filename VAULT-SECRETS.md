@@ -1,30 +1,30 @@
-# Vault secrets for this app (qcguy)
+# Vault secrets for this app (qcguy / Ghost CMS)
 
-> **Status: not yet onboarded to Vault.** This app does not yet have secrets in
-> the shared HashiCorp Vault. This is a forward pointer so the workflow is known
-> when onboarding happens.
+qcguy's Ghost config (`config.production.json`, including the mail password) is
+stored in the shared **HashiCorp Vault**, not a Kubernetes `ConfigMap`. The Vault
+Agent Injector renders it to `/vault/secrets/config.production.json` and the
+container copies it to `/var/lib/ghost/config.production.json` at start.
 
-When onboarded, this app's config/secrets will live at `kv/qcguy/<service>`
-(namespace `qcguy`), injected into pods at `/vault/secrets/config` — no
-Kubernetes `Secret`/`ConfigMap` manifests.
+- **Vault path:** `kv/qcguy/ghost` — one key `CONFIG_PRODUCTION_JSON_B64`
+  (= base64 of the whole `config.production.json`).
+- **Namespace:** `qcguy`  ·  **Role → policy:** `qcguy-role` → `qcguy-policy`
+- **Owned here** in `vault/ghost.secret.sops.env` (SOPS+age encrypted).
 
-## Onboarding + adding secrets
+## How to change the config / a secret
 
-Both are documented **canonically** here (see "Onboarding a new app"):
-**https://github.com/wiqram/vault/blob/main/docs/adding-secrets.md**
+1. Edit `config/config.production.json` (the real Ghost config).
+2. Re-encode + re-encrypt it into `vault/ghost.secret.sops.env`:
+   ```sh
+   printf 'CONFIG_PRODUCTION_JSON_B64=%s\n' "$(base64 -w0 config/config.production.json)" > vault/ghost.secret.env
+   cd vault && sops -e ghost.secret.env > ghost.secret.sops.env && rm ghost.secret.env
+   ```
+3. Commit + push → the **qcguy** Jenkins job runs `vaultSync(app:'qcguy')` to
+   refresh `kv/qcguy/ghost`, then rolls the deployment so the pod restarts with
+   the new config.
 
-Onboarding (one-time, in the `wiqram/vault` repo):
+Canonical workflow: https://github.com/wiqram/vault/blob/main/docs/adding-secrets.md
 
-1. Namespace + `vault-secrets` SA for `qcguy`.
-2. Least-privilege `qcguy-policy` scoped to **only** `kv/data/qcguy/*`
-   (+ `kv/metadata/qcguy/*`) — never the wildcard `kv/*`.
-3. `qcguy-role` bound to `bound_service_account_namespaces=qcguy`.
-4. `scripts/setup-jenkins-approle.sh qcguy` for the scoped write identity.
-5. Manifests under `apps/qcguy/<service>.env` / `.secret.sops.env`.
-6. Injector annotations + a `vault-app=qcguy` label on the deployments.
-
-After that, adding a secret is the standard **edit → `sops` → validate →
-`--dry-run` → push → CI** loop, identical to every other app.
-
-**Rules:** never commit plaintext `*.secret.env` — only the encrypted
-`*.secret.sops.env`. A secret is not live until the consuming pod restarts.
+**Rules:** never commit the plaintext `config.production.json` *as a secret* (it
+carries the mail password) — only the encrypted `vault/ghost.secret.sops.env` is
+the source of truth Vault reads. A change is live only after the pod restarts (CI
+does this).
