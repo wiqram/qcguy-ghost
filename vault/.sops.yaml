@@ -1,0 +1,7 @@
+# SOPS config for qcguy's Vault secret. Edit with: cd vault && sops ghost.secret.sops.env
+# ghost.secret.sops.env holds CONFIG_PRODUCTION_JSON_B64 = base64(config.production.json),
+# rendered back to a file at /vault/secrets/config.production.json by the injector.
+creation_rules:
+  - path_regex: \.secret(\.sops)?\.env$
+    age: "age1jgqwj4az5kuzhq2m9077cmdr3q22zv60z86wrwql8ehvj4k0qgeskqx4nn"
+    unencrypted_regex: "^(#.*)?$"
