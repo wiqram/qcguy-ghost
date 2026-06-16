@@ -165,13 +165,20 @@ spec:
             - cp /vault/secrets/config.production.json /var/lib/ghost/config.production.json && exec docker-entrypoint.sh node current/index.js
           ports:
             - containerPort: 2368
-          # Gate traffic on Ghost actually serving HTTP. A 200/301 from / marks the
-          # pod Ready; combined with maxUnavailable:0 the rollout is seamless.
+          # Gate traffic on Ghost actually serving HTTP. Ghost (url=https://...) 301-
+          # redirects plain HTTP / to https; kubelet follows the redirect onto the
+          # plaintext 2368 port and fails the TLS handshake ("server gave HTTP response
+          # to HTTPS client"), so the probe never passes. X-Forwarded-Proto: https tells
+          # Ghost the request is already secure, so it returns 200 with no redirect.
+          # Combined with maxUnavailable:0 the rollout is seamless.
           # Generous failureThreshold covers Ghost's ~20-40s boot without a startupProbe.
           readinessProbe:
             httpGet:
               path: /
               port: 2368
+              httpHeaders:
+                - name: X-Forwarded-Proto
+                  value: https
             initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5
