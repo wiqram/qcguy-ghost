@@ -120,7 +120,13 @@ spec:
     matchLabels:
       app: qcguy
       io.kompose.service: qcguy
-  strategy: {}
+  # Keep the old pod serving until the new one is Ready, so Cloudflare never
+  # hits an empty NodePort during a rollout (caused visitor-facing 502s).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   template:
     metadata:
       annotations:
@@ -159,6 +165,17 @@ spec:
             - cp /vault/secrets/config.production.json /var/lib/ghost/config.production.json && exec docker-entrypoint.sh node current/index.js
           ports:
             - containerPort: 2368
+          # Gate traffic on Ghost actually serving HTTP. A 200/301 from / marks the
+          # pod Ready; combined with maxUnavailable:0 the rollout is seamless.
+          # Generous failureThreshold covers Ghost's ~20-40s boot without a startupProbe.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 2368
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           # Ghost CMS, ~100 visitors/day. Observed ~595Mi steady, ~1.25 CPU on spikes.
           resources:
             requests:
