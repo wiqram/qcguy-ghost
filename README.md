@@ -1,5 +1,14 @@
 # qcguy-ghost
 
+Ghost CMS on Kubernetes, backed by an in-cluster MySQL 8 StatefulSet.
+
+**Docs**
+- [`RESTORE.md`](RESTORE.md) — disaster recovery: restoring qcguy on a fresh host from backups
+- [`VAULT-SECRETS.md`](VAULT-SECRETS.md) — how the Ghost config/secrets flow through Vault
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) · [`docs/superpowers/plans/`](docs/superpowers/plans/) — SQLite→MySQL migration design + plan
+
+---
+
 kubectl create namespace qcguy --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl create configmap qcguy-configmap --from-file=./config -n qcguy 
