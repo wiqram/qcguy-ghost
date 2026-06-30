@@ -196,3 +196,94 @@ spec:
               name: qcguy-content-storage
       #restartPolicy: Never
 status: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: qcguy
+  labels:
+    app: mysql
+spec:
+  clusterIP: None          # headless — stable DNS mysql.qcguy.svc.cluster.local
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+      name: mysql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: qcguy
+  labels:
+    app: mysql
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+      annotations:
+        # Render the MySQL passwords from the same Vault bundle Ghost uses.
+        vault.hashicorp.com/agent-inject: 'true'
+        vault.hashicorp.com/role: 'qcguy-role'
+        vault.hashicorp.com/agent-pre-populate-only: 'true'
+        vault.hashicorp.com/agent-inject-secret-mysql-root: 'kv/qcguy/ghost'
+        vault.hashicorp.com/agent-inject-template-mysql-root: |
+          {{- with secret "kv/qcguy/ghost" -}}{{ .Data.data.MYSQL_ROOT_PASSWORD }}{{- end -}}
+        vault.hashicorp.com/agent-inject-secret-mysql-pass: 'kv/qcguy/ghost'
+        vault.hashicorp.com/agent-inject-template-mysql-pass: |
+          {{- with secret "kv/qcguy/ghost" -}}{{ .Data.data.MYSQL_PASSWORD }}{{- end -}}
+    spec:
+      serviceAccountName: vault-secrets
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          # Force native auth so Ghost's mysql2 driver can never be rejected by
+          # caching_sha2_password mid-cutover.
+          args: ["--default-authentication-plugin=mysql_native_password"]
+          env:
+            - name: MYSQL_ROOT_PASSWORD_FILE
+              value: /vault/secrets/mysql-root
+            - name: MYSQL_PASSWORD_FILE
+              value: /vault/secrets/mysql-pass
+            - name: MYSQL_DATABASE
+              value: ghost
+            - name: MYSQL_USER
+              value: ghost
+          ports:
+            - containerPort: 3306
+              name: mysql
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "384Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h 127.0.0.1 -u root -p\"$(cat /vault/secrets/mysql-root)\" --silent"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 2Gi
