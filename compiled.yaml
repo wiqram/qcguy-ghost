@@ -357,7 +357,12 @@ metadata:
   labels:
     app: qcguy-mysql-backup
 spec:
-  schedule: "0 2 * * *"
+  # Weekly, Monday 03:00 Europe/London — ~2h before STEP0 backup-minikube-mnt.sh
+  # (Mondays ~05:00 London) so this fresh, crash-consistent dump is captured in
+  # that week's tar + GCS Coldline. (The raw /mnt/qcguy-mysql datadir is also in
+  # that tar; this logical dump is the guaranteed-restorable copy.)
+  schedule: "0 3 * * 1"
+  timeZone: "Europe/London"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -388,10 +393,12 @@ spec:
             - name: mysql-backup
               image: mysql:8.0
               imagePullPolicy: IfNotPresent
-              command: ["/bin/sh","-c"]
+              # bash (not sh): the prune uses associative arrays + [[ =~ ]], and
+              # pipefail makes a failed mysqldump abort before any pruning.
+              command: ["/bin/bash","-c"]
               args:
                 - |
-                  set -eu
+                  set -euo pipefail
                   . /vault/secrets/config
                   day=$(date +%m-%d-%y)
                   out="/backups/qcguy-${day}.sql.gz"
@@ -400,8 +407,35 @@ spec:
                     --single-transaction --routines --triggers --events \
                     --no-tablespaces --databases ghost | gzip -c > "$out"
                   echo "[backup] wrote $(ls -lh "$out" | awk '{print $5, $9}')"
-                  echo "[backup] rotating — keeping the 14 most recent"
-                  ls -1t /backups/qcguy-*.sql.gz | tail -n +15 | xargs -r rm -f
+
+                  # --- Retention: identical policy to STEP0/backup-minikube-mnt.sh ---
+                  # Keep every weekly dump for the current + previous month. For any
+                  # older month, keep only that month's most recent (highest-day) dump.
+                  echo "[backup] pruning (keep current+previous month; one per older month)"
+                  prev_ym=$(date -d "$(date +%Y-%m-01) -1 month" +%y%m)
+                  declare -A latest_day latest_file
+                  for f in /backups/qcguy-*.sql.gz; do
+                    [ -e "$f" ] || continue
+                    base=$(basename "$f")
+                    [[ "$base" =~ ^qcguy-([0-9]{2})-([0-9]{2})-([0-9]{2})\.sql\.gz$ ]] || continue
+                    mm="${BASH_REMATCH[1]}"; dd="${BASH_REMATCH[2]}"; yy="${BASH_REMATCH[3]}"
+                    ym="$yy$mm"
+                    if [ "$ym" -ge "$prev_ym" ]; then continue; fi
+                    if [ -z "${latest_day[$ym]:-}" ] || [ "$dd" -gt "${latest_day[$ym]}" ]; then
+                      latest_day[$ym]="$dd"; latest_file[$ym]="$f"
+                    fi
+                  done
+                  for f in /backups/qcguy-*.sql.gz; do
+                    [ -e "$f" ] || continue
+                    base=$(basename "$f")
+                    [[ "$base" =~ ^qcguy-([0-9]{2})-([0-9]{2})-([0-9]{2})\.sql\.gz$ ]] || continue
+                    mm="${BASH_REMATCH[1]}"; dd="${BASH_REMATCH[2]}"; yy="${BASH_REMATCH[3]}"
+                    ym="$yy$mm"
+                    if [ "$ym" -ge "$prev_ym" ]; then continue; fi
+                    if [ "$f" != "${latest_file[$ym]:-}" ]; then
+                      echo "  deleting $f"; rm -f "$f"
+                    fi
+                  done
                   echo "[backup] retained:"; ls -1t /backups/qcguy-*.sql.gz
               resources:
                 requests:
