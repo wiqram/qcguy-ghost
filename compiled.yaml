@@ -283,7 +283,133 @@ spec:
         name: mysql-data
       spec:
         accessModes: ["ReadWriteOnce"]
-        storageClassName: standard
+        # manual + the qcguy-mysql-pv below (hostPath /mnt/qcguy-mysql) so MySQL's
+        # datadir lives in the minikube /mnt mount — captured by the weekly
+        # backup-minikube-mnt.sh tar + GCS, matching predictonomy/dyingpaleblue postgres.
+        storageClassName: manual
         resources:
           requests:
             storage: 2Gi
+---
+# MySQL datadir on a hostPath under the backed-up minikube mount. claimRef pins it
+# to the StatefulSet's PVC so the manual bind is deterministic.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: qcguy-mysql-pv
+  labels:
+    app: mysql
+spec:
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /mnt/qcguy-mysql
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: qcguy
+    name: mysql-data-mysql-0
+---
+# --- Daily logical backup of the ghost DB (crash-consistent mysqldump) ---
+# Writes qcguy-MM-DD-YY.sql.gz into /mnt/qcguy-mysql-backups (also in the weekly
+# tar + GCS), keeping the 14 most recent. Mirrors predictonomy-postgres-backup.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: qcguy-mysql-backups-pv
+  labels:
+    app: qcguy-mysql-backups
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /mnt/qcguy-mysql-backups
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: qcguy
+    name: qcguy-mysql-backups-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qcguy-mysql-backups-pvc
+  namespace: qcguy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qcguy-mysql-backup
+  namespace: qcguy
+  labels:
+    app: qcguy-mysql-backup
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          annotations:
+            vault.hashicorp.com/agent-inject: 'true'
+            vault.hashicorp.com/role: 'qcguy-role'
+            vault.hashicorp.com/agent-pre-populate-only: 'true'
+            vault.hashicorp.com/agent-inject-secret-config: 'kv/qcguy/ghost'
+            vault.hashicorp.com/agent-inject-template-config: |
+              {{- with secret "kv/qcguy/ghost" -}}
+              export MYSQL_PWD="{{ .Data.data.MYSQL_PASSWORD }}"
+              {{- end }}
+        spec:
+          serviceAccountName: vault-secrets
+          restartPolicy: Never
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: qcguy-mysql-backups-pvc
+          containers:
+            - name: mysql-backup
+              image: mysql:8.0
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh","-c"]
+              args:
+                - |
+                  set -eu
+                  . /vault/secrets/config
+                  day=$(date +%m-%d-%y)
+                  out="/backups/qcguy-${day}.sql.gz"
+                  echo "[backup] dumping ghost -> ${out}"
+                  mysqldump -h mysql.qcguy.svc.cluster.local -u ghost \
+                    --single-transaction --routines --triggers --events \
+                    --no-tablespaces --databases ghost | gzip -c > "$out"
+                  echo "[backup] wrote $(ls -lh "$out" | awk '{print $5, $9}')"
+                  echo "[backup] rotating — keeping the 14 most recent"
+                  ls -1t /backups/qcguy-*.sql.gz | tail -n +15 | xargs -r rm -f
+                  echo "[backup] retained:"; ls -1t /backups/qcguy-*.sql.gz
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "256Mi"
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
