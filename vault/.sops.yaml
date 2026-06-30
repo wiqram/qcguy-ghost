@@ -3,5 +3,5 @@
 # rendered back to a file at /vault/secrets/config.production.json by the injector.
 creation_rules:
   - path_regex: \.secret(\.sops)?\.env$
-    age: "age1jgqwj4az5kuzhq2m9077cmdr3q22zv60z86wrwql8ehvj4k0qgeskqx4nn"
+    age: "age14v65rhzmevxage6gtzn3fsk6ethr0k4ranm2e7repak39mpmdusqr8cgd5,age1jgqwj4az5kuzhq2m9077cmdr3q22zv60z86wrwql8ehvj4k0qgeskqx4nn"
     unencrypted_regex: "^(#.*)?$"
