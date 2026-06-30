@@ -14,10 +14,21 @@
 
 - **This is a runbook, not a code feature** — "tests" are verification commands with expected output. Do not skip them; they are the no-data-loss guarantee.
 - **Source of truth for data is the LIVE pod PVC** (`qcguy-content-claim`), NOT the stale `data/data/ghost.db` in this repo.
-- **Deploy mechanics during the window:** apply manifests with direct `kubectl apply` for control. Only **merge the branch to `main` at the very end**, so Jenkins (`vaultSync` + apply + rollout) reconciles to the already-verified state instead of racing the migration.
-- **Maintenance window:** Ghost is offline from Task 4 (scale to 0) until Task 6 (cutover up). Expect a few minutes. The user has approved this.
-- **Branch:** all work happens on `feat/mysql-migration` (already created and holding the design doc).
+- **Deploy mechanics: GitOps via Jenkins only.** There is no local `vault` CLI/auth. Vault is written **only** by the Jenkins `qcguy` job, which runs `vaultSync(app:'qcguy')` (writes `kv/qcguy/ghost`) **before** `kubectl apply -f compiled.yaml` + rollout. So every Vault/manifest change reaches the cluster by **commit → push to `main` → watch Jenkins**, never by direct local `kubectl apply` of Vault-dependent resources.
+- **Pushing to `main` is a production deploy.** Get explicit user confirmation before each push to `main`. There are exactly **two** such pushes (see choreography).
+- **Maintenance window:** Ghost is offline from Task 4 (scale to 0) until Task 6 (cutover push completes). Expect a few minutes plus one Jenkins run. During the window do NOT push to `main` until the cutover commit is ready (a push re-applies `replicas:1` and would bring Ghost up mid-migration).
+- **Branch:** all work happens on `feat/mysql-migration`; it is merged to `main` to trigger Jenkins at each deploy point.
 - **Rollback at any point:** see Task 8. SQLite on the PVC is untouched throughout.
+
+## Execution choreography (GitOps — read this; it reorders the raw tasks)
+
+The Jenkins pipeline does `vaultSync` (writes Vault) then `kubectl apply` + rollout, in that order, on every push to `main`. That ordering is what makes Vault-injected MySQL creds work. Execute in these phases:
+
+1. **PUSH #1 — deploy MySQL (Ghost stays on SQLite).** Land Task 1 (MySQL keys in the Vault bundle) **and** Task 2 (MySQL StatefulSet in `compiled.yaml`) in the same merge to `main`. Jenkins writes `MYSQL_*` to Vault, then applies — MySQL boots with rendered creds; Ghost is re-rolled but unchanged (still SQLite). Verify MySQL is Ready (Task 2 Steps 4-5).
+2. **Manual, no pushes — Tasks 3, 4, 5.** Back up SQLite (Task 3), scale Ghost to 0 (Task 4), apply the migration Job with `kubectl apply` (Task 5 — the Job reads `MYSQL_PASSWORD` from Vault, already populated by Push #1), verify the row-count diff. **Do not push to `main` during this window.**
+3. **PUSH #2 — cutover.** Land Task 6 (config → mysql, image pinned to `ghost:6.47.0`, re-encoded Vault bundle) in a merge to `main`. Jenkins writes the new config to Vault, then applies `compiled.yaml` (image 6.47.0, `replicas:1`) — Ghost rolls up on MySQL. Verify (Task 7).
+
+Where individual task steps below say "`kubectl apply -f compiled.yaml`" or "manual `vault kv put`", treat those as **superseded by the push-to-`main` mechanism above**. Direct `kubectl apply` is used ONLY for the non-Vault, non-`compiled.yaml` migration Job in Task 5.
 
 ---
 
@@ -204,13 +215,18 @@ kubectl apply --dry-run=client -f compiled.yaml
 
 Expected: every resource prints `... (dry run)` with no errors (Namespace, ServiceAccount, both Services, PV, PVC, Deployment, mysql Service, mysql StatefulSet).
 
-- [ ] **Step 3: Apply (creates MySQL; Ghost Deployment unchanged)**
+- [ ] **Step 3: PUSH #1 — merge Task 1 + Task 2 to `main` to deploy MySQL (CONFIRM with user first)**
+
+This single push must contain both the Vault bundle change (Task 1) and the MySQL manifest (this task), so Jenkins `vaultSync` writes `MYSQL_*` to Vault *before* it applies the StatefulSet. Commit `compiled.yaml` on the feature branch first, then merge.
 
 ```bash
-kubectl apply -f compiled.yaml
+git add compiled.yaml && git commit -m "feat(k8s): add MySQL 8 StatefulSet for qcguy Ghost"
+git checkout main && git merge --no-ff feat/mysql-migration -m "feat: add MySQL 8 StatefulSet + creds (Ghost still on SQLite)"
+git push origin main
+git checkout feat/mysql-migration
 ```
 
-Expected: `statefulset.apps/mysql created`, `service/mysql created`, others `unchanged` / `configured`.
+Then watch the Jenkins `qcguy` job: the `Refresh Vault secrets` stage must succeed (writes `kv/qcguy/ghost` incl. `MYSQL_*`) before `Deploy K8s qcguy` applies `compiled.yaml`. Expected end state: pipeline green, `statefulset.apps/mysql created`.
 
 - [ ] **Step 4: Wait for MySQL to become Ready**
 
@@ -230,12 +246,7 @@ kubectl -n qcguy exec mysql-0 -c mysql -- \
 
 Expected: a table listing including `ghost`. (If this command needs approval to exec, approve it — it is read-only.)
 
-- [ ] **Step 6: Commit the manifest change**
-
-```bash
-git add compiled.yaml
-git commit -m "feat(k8s): add MySQL 8 StatefulSet for qcguy Ghost"
-```
+> The `compiled.yaml` commit already happened in Step 3 (before the merge). Nothing else to commit for this task.
 
 ---
 
@@ -476,36 +487,24 @@ sops -d vault/ghost.secret.sops.env | grep -o '"client": *"mysql"'
 
 Expected: prints `"client": "mysql"` — confirms the encrypted bundle now carries the MySQL config. (The `MYSQL_*` keys from Task 1 are preserved because we only replaced the one CONFIG line.)
 
-- [ ] **Step 4: Push the Vault secret to the live Vault (manual, mirrors the Jenkins vaultSync)**
-
-> The clean path is to let Jenkins do this on merge (Task 7). To bring Ghost up inside the window without waiting for CI, push the secret now using the same `vaultSync` tooling, or apply directly. If you have `vault` CLI access:
-
-```bash
-# the Vault Agent reads kv/qcguy/ghost; vaultSync(app:'qcguy') normally writes it.
-# Manual equivalent (run from an authenticated context):
-vault kv put kv/qcguy/ghost \
-  CONFIG_PRODUCTION_JSON_B64="$(base64 -w0 config/config.production.json)" \
-  MYSQL_ROOT_PASSWORD="<pw>" MYSQL_PASSWORD="<pw>"
-```
-
-Expected: `Success! Data written to: kv/qcguy/ghost`. If you do not have direct Vault access, skip to Task 7 and let Jenkins push it; Ghost stays down until then.
-
-- [ ] **Step 5: Restore the image and scale Ghost back up**
-
-```bash
-kubectl apply -f compiled.yaml          # applies the ghost:6.47.0 image change
-kubectl -n qcguy scale deployment/qcguy --replicas=1
-kubectl -n qcguy rollout status deployment/qcguy --timeout=240s
-```
-
-Expected: rollout completes; a new `qcguy-...` pod reaches `1/1 Running`. (The Deployment spec still has `replicas: 1` in git; the scale-to-0 was a live override now superseded.)
-
-- [ ] **Step 6: Commit the cutover changes**
+- [ ] **Step 4: Commit the cutover changes on the feature branch**
 
 ```bash
 git add config/config.production.json compiled.yaml vault/ghost.secret.sops.env
 git commit -m "feat: cut Ghost over to MySQL 8 and pin image to 6.47.0"
 ```
+
+- [ ] **Step 5: PUSH #2 — merge to `main` to cut over (CONFIRM with user first)**
+
+Jenkins runs `vaultSync` (writes the new MySQL config to `kv/qcguy/ghost`) then `kubectl apply -f compiled.yaml` — which sets `replicas:1` (overriding the manual scale-to-0 from Task 4) and rolls Ghost onto `ghost:6.47.0` against MySQL.
+
+```bash
+git checkout main && git merge --no-ff feat/mysql-migration -m "feat: cut qcguy Ghost over to MySQL 8"
+git push origin main
+git checkout feat/mysql-migration
+```
+
+Watch the Jenkins `qcguy` job: `Refresh Vault secrets` green, then `Deploy K8s qcguy` → `rollout status deployment ... qcguy` succeeds. Expected: pipeline green, a new `qcguy-...` pod `1/1 Running` on MySQL.
 
 ---
 
@@ -554,15 +553,17 @@ kubectl -n qcguy exec mysql-0 -c mysql -- sh -c '
 
 Expected: counts match the SQLite baseline from Task 3, Step 3. Also click through a known post and the members page in a browser if convenient.
 
-- [ ] **Step 5: Reconcile GitOps — merge to `main` so Jenkins becomes source of truth**
+- [ ] **Step 5: Confirm `main` is the source of truth and tidy the branch**
+
+The cutover already merged the feature branch (with all design/plan/code commits) to `main` in Task 6 Step 5, and Jenkins has reconciled. Just confirm and optionally delete the merged branch.
 
 ```bash
-git checkout main
-git merge --no-ff feat/mysql-migration -m "Merge: migrate qcguy Ghost from SQLite to MySQL 8"
-git push origin main
+git checkout main && git pull --ff-only
+git log --oneline -3
+git branch -d feat/mysql-migration   # optional: delete once satisfied
 ```
 
-Expected: Jenkins `qcguy` job runs `vaultSync(app:'qcguy')` (pushes the bundle — idempotent if Task 6 Step 4 already did) and `kubectl apply` + rollout (no-op since already applied). The site stays up.
+Expected: `main` HEAD is the cutover merge; the working tree on `main` shows `client": "mysql"` in `config/config.production.json` and `ghost:6.47.0` in `compiled.yaml`.
 
 - [ ] **Step 6: Archive the backup off-cluster**
 
@@ -574,38 +575,38 @@ Copy `~/qcguy-migration-backup/<date>/` (holding `ghost.db`, `content.tgz`, both
 
 **Files:** revert working-tree changes
 
-Use this if Task 5 verification fails or Ghost won't boot on MySQL. SQLite on the PVC was never modified.
+SQLite on the PVC was never modified. There are two cases depending on whether the cutover (PUSH #2) has happened.
 
-- [ ] **Step 1: Revert config and image to SQLite**
+- [ ] **Case A — failure DURING the window, before PUSH #2 (e.g. Task 5 diff mismatch)**
 
-```bash
-git checkout -- config/config.production.json compiled.yaml   # if not yet committed
-# OR if already committed in Task 6:
-git revert --no-edit <task6-commit-sha>
-```
-
-The `database` block returns to `client: sqlite3`, image to `ghost:latest`.
-
-- [ ] **Step 2: Re-encode the SQLite config into Vault and push**
+Vault still holds the original SQLite config (the mysql config is only written at PUSH #2). So just bring Ghost back up — it boots on SQLite from the unchanged Vault secret. No Vault write, no push.
 
 ```bash
-sops -d vault/ghost.secret.sops.env > vault/ghost.secret.env
-NEWB64="$(base64 -w0 config/config.production.json)"
-grep -v '^CONFIG_PRODUCTION_JSON_B64=' vault/ghost.secret.env > t && printf 'CONFIG_PRODUCTION_JSON_B64=%s\n' "$NEWB64" >> t && mv t vault/ghost.secret.env
-cd vault && sops -e ghost.secret.env > ghost.secret.sops.env && rm ghost.secret.env && cd ..
-vault kv put kv/qcguy/ghost CONFIG_PRODUCTION_JSON_B64="$NEWB64" MYSQL_ROOT_PASSWORD="<pw>" MYSQL_PASSWORD="<pw>"   # or let Jenkins do it
-```
-
-- [ ] **Step 3: Redeploy and scale Ghost up on SQLite**
-
-```bash
-kubectl apply -f compiled.yaml
 kubectl -n qcguy scale deployment/qcguy --replicas=1
 kubectl -n qcguy rollout status deployment/qcguy --timeout=240s
 curl -s -o /dev/null -w "%{http_code}\n" -H "X-Forwarded-Proto: https" https://www.qcguy.com/
 ```
 
-Expected: `200`. Site is back on the original SQLite data. The CPU bug returns (expected) — diagnose MySQL separately and retry the migration later. MySQL StatefulSet can be left running or removed.
+Expected: `200`, site back on original SQLite data. Then wipe MySQL and retry later: `kubectl -n qcguy delete statefulset mysql && kubectl -n qcguy delete pvc mysql-data-mysql-0`.
+
+- [ ] **Case B — failure AFTER PUSH #2 (Ghost won't boot on MySQL)**
+
+The mysql config is now in `main` + Vault. Revert via GitOps so Jenkins rewrites the SQLite config to Vault and redeploys.
+
+```bash
+git checkout main && git pull --ff-only
+git revert --no-edit <cutover-merge-or-commit-sha>   # restores sqlite3 block + ghost:latest
+git push origin main
+```
+
+Watch Jenkins: `vaultSync` rewrites `kv/qcguy/ghost` with the SQLite config, then `kubectl apply` + rollout brings Ghost up on SQLite.
+
+```bash
+kubectl -n qcguy rollout status deployment/qcguy --timeout=240s
+curl -s -o /dev/null -w "%{http_code}\n" -H "X-Forwarded-Proto: https" https://www.qcguy.com/
+```
+
+Expected: `200`. Site is back on the original SQLite data. The CPU bug returns (expected) — diagnose MySQL separately and retry. The MySQL StatefulSet can be left running or removed.
 
 ---
 
