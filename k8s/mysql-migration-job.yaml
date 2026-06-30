@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ghost-sqlite-to-mysql
+  namespace: qcguy
+spec:
+  backoffLimit: 0          # do not silently retry a partial load
+  template:
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: 'true'
+        vault.hashicorp.com/role: 'qcguy-role'
+        vault.hashicorp.com/agent-pre-populate-only: 'true'
+        vault.hashicorp.com/agent-inject-secret-mysql-pass: 'kv/qcguy/ghost'
+        vault.hashicorp.com/agent-inject-template-mysql-pass: |
+          {{- with secret "kv/qcguy/ghost" -}}{{ .Data.data.MYSQL_PASSWORD }}{{- end -}}
+    spec:
+      serviceAccountName: vault-secrets
+      restartPolicy: Never
+      volumes:
+        - name: content
+          persistentVolumeClaim:
+            claimName: qcguy-content-claim
+      containers:
+        - name: migrate
+          image: python:3.12-slim
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -e
+              echo "=== SQLite baseline row counts (frozen DB being migrated) ==="
+              python3 - <<'PY'
+              import sqlite3
+              con = sqlite3.connect('/content/data/ghost.db')
+              for (t,) in con.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name"):
+                  n = con.execute('select count(*) from "%s"' % t).fetchone()[0]
+                  print("SQLITECOUNT %s %s" % (t, n))
+              PY
+              echo "=== installing sqlite3-to-mysql ==="
+              pip install --no-cache-dir 'sqlite3-to-mysql' >/tmp/pip.log 2>&1 || pip install --no-cache-dir 'sqlite-to-mysql' >/tmp/pip.log 2>&1
+              MYSQL_PW="$(cat /vault/secrets/mysql-pass)"
+              echo "=== running sqlite3mysql ==="
+              # --without-foreign-keys: sqlite3-to-mysql fails adding some Ghost FKs
+              # (missing index on referenced col, e.g. stripe_products). FK constraints
+              # are integrity objects, not data; all rows still transfer and Ghost keys
+              # off its migrations table, not FK existence.
+              sqlite3mysql \
+                --sqlite-file /content/data/ghost.db \
+                --mysql-database ghost \
+                --mysql-user ghost \
+                --mysql-password "$MYSQL_PW" \
+                --mysql-host mysql.qcguy.svc.cluster.local \
+                --mysql-port 3306 \
+                --mysql-charset utf8mb4 \
+                --mysql-collation utf8mb4_general_ci \
+                --without-foreign-keys
+              echo "MIGRATION_DONE"
+          volumeMounts:
+            - name: content
+              mountPath: /content
+              readOnly: true

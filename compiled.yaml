@@ -155,7 +155,7 @@ spec:
         - env:
             - name: url
               value: https://www.qcguy.com
-          image: ghost:latest
+          image: ghost:6.47.0
           #imagePullPolicy: Always
           name: qcguy
           # Copy the Vault-rendered config to where Ghost expects it, then start Ghost
